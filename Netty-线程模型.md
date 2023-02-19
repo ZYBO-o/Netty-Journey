@@ -37,7 +37,7 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 这个最好理解，只有 **一个线程** ，只是会把 **建立连接** 和 **处理请求** 这两种任务分发给不同的类去处理，如下图所示：
 
 <div align="center">  
-    <img src="Netty-线程模型/1.PNG" width="70%"/>
+    <img src="Netty-线程模型/1.PNG" width="60%"/>
   </div>
 
 
@@ -62,7 +62,7 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 这个线程模型针对前面的问题作出了一定的优化，多出了处理业务的线程池，如下图所示：
 
 <div align="center">  
-    <img src="Netty-线程模型/2.png" width="80%"/>
+    <img src="Netty-线程模型/2.PNG" width="70%"/>
   </div>
 
 
