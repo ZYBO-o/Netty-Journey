@@ -83,7 +83,7 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 主从 Reactor 多线程模型又在前面的模型基础上做了进一步优化， **增加了子 Reactor** ，如下图所示：
 
 <div align="center">  
-    <img src="Netty-线程模型/3.png" width="70%"/>
+    <img src="Netty-线程模型/3.png" width="65%"/>
   </div>
 
 **整个流程大概可以分为以下几步**：
