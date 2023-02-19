@@ -1,13 +1,3 @@
----
-title: Netty线程模型
-date: 2023-02-18 11:53:24
-tags: 
-- Netty
-- Java
-category: Java 
-summary_img: /images/Netty线程模型.jpeg
----
-
 > Netty 的线程模型是基于 Reactor 模型改进而来的，因此需要先熟悉 Reactor 模型，帮助对于 Netty 线程模型的理解。
 
 # **一. Reactor 模型**
@@ -46,10 +36,10 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 
 这个最好理解，只有 **一个线程** ，只是会把 **建立连接** 和 **处理请求** 这两种任务分发给不同的类去处理，如下图所示：
 
-<center class="half"> 
+<div align="center">  
     <img src="Netty-线程模型/1.PNG" width="70%"/>
-    <div>图1:单Reactor单线程</div>
-</center>
+  </div>
+
 
 整个流程简单来讲就是：
 
@@ -71,10 +61,10 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 
 这个线程模型针对前面的问题作出了一定的优化，多出了处理业务的线程池，如下图所示：
 
-<center class="half"> 
-    <img src="Netty-线程模型/2.PNG" width="90%"/>
-    <div>图2:单Reactor多线程</div>
-</center>
+<div align="center">  
+    <img src="Netty-线程模型/2.png" width="80%"/>
+  </div>
+
 
 前面的流程与单 Reactor 单线程是一致的，到 Handler 这一步就不一样了：
 
@@ -92,10 +82,9 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 
 主从 Reactor 多线程模型又在前面的模型基础上做了进一步优化， **增加了子 Reactor** ，如下图所示：
 
-<center class="half"> 
-    <img src="Netty-线程模型/3.png" width="80%"/>
-    <div>图3:多Reactor多线程</div>
-</center>
+<div align="center">  
+    <img src="Netty-线程模型/3.png" width="100%"/>
+  </div>
 
 **整个流程大概可以分为以下几步**：
 
