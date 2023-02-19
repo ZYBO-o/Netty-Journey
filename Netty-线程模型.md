@@ -37,7 +37,7 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 这个最好理解，只有 **一个线程** ，只是会把 **建立连接** 和 **处理请求** 这两种任务分发给不同的类去处理，如下图所示：
 
 <div align="center">  
-    <img src="Netty-线程模型/1.PNG" width="60%"/>
+    <img src="Netty-线程模型/1.PNG" width="50%"/>
   </div>
 
 
@@ -83,7 +83,7 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 主从 Reactor 多线程模型又在前面的模型基础上做了进一步优化， **增加了子 Reactor** ，如下图所示：
 
 <div align="center">  
-    <img src="Netty-线程模型/3.png" width="80%"/>
+    <img src="Netty-线程模型/3.png" width="70%"/>
   </div>
 
 **整个流程大概可以分为以下几步**：
@@ -107,10 +107,9 @@ Reactor 设计模型是一种事件处理模式，用于处理通过一个或多
 
 Netty 线程模型是基于主从 Reactor 多线程模型优化而来的，整体架构如下图所示：
 
-<center class="half"> 
-    <img src="Netty-线程模型/4.png" width="100%"/>
-    <div>图4:Netty线程</div>
-</center>
+<div align="center">  
+    <img src="Netty-线程模型/4.png" width="80%"/>
+  </div>
 
 Netty 的线程模型主要分为两部分，分别是 `BossGroup` 和 `WorkerGroup`，它们都分别管理一个或多个 `NioEventLoop`。每个 `NioEventLoop` 对应着一个线程，一个 `Selector`，一个 `Executor` 和一个 `TaskQueue`。`NioEventLoop` 可以理解成一个事件循环：
 
