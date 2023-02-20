@@ -497,15 +497,302 @@ read index:0 write index:20 capacity:20
 
 #  八. 内存回收
 
+## 1. 基本介绍
 
+由于 Netty 中有堆外内存（直接内存）的 ByteBuf 实现，**堆外内存最好是手动来释放**，而不是等 GC 垃圾回收。
 
+- UnpooledHeapByteBuf 使用的是 JVM 内存，只需等 GC 回收内存即可
+- UnpooledDirectByteBuf 使用的就是直接内存了，需要特殊的方法来回收内存
+- PooledByteBuf 和它的子类使用了池化机制，需要更复杂的规则来回收内存
 
+Netty 这里采用了引用计数法来控制回收内存，每个 ByteBuf 都实现了 ReferenceCounted 接口
+
+- 每个 ByteBuf 对象的初始计数为 1
+- 调用 release 方法计数减 1，如果计数为 0，ByteBuf 内存被回收
+- 调用 retain 方法计数加 1，表示调用者没用完之前，其它 handler 即使调用了 release 也不会造成回收
+- 当计数为 0 时，底层内存会被回收，这时即使 ByteBuf 对象还在，其各个方法均无法正常使用
+
+## 2. 内存回收规则
+
+因为 pipeline 的存在，一般需要将 ByteBuf 传递给下一个 ChannelHandler，如果在每个 ChannelHandler 中都去调用 release ，就失去了传递性（如果在这个 ChannelHandler 内这个 ByteBuf 已完成了它的使命，那么便无须再传递）
+
+基本规则是， **谁是最后使用者，谁负责 release**
+
+- 起点，对于 NIO 实现来讲，在 io.netty.channel.nio.AbstractNioByteChannel.NioByteUnsafe#read 方法中首次创建 ByteBuf 放入 pipeline（line 163 pipeline.fireChannelRead(byteBuf)）
+- 入站 ByteBuf 处理原则
+  - 对原始 ByteBuf 不做处理，调用 ctx.fireChannelRead(msg) 向后传递，这时无须 release
+  - **将原始 ByteBuf 转换为其它类型的 Java 对象，这时 ByteBuf 就没用了，必须 release**
+  - **如果不调用 ctx.fireChannelRead(msg) 向后传递，那么也必须 release**
+  - **注意各种异常，如果 ByteBuf 没有成功传递到下一个 ChannelHandler，必须 release**
+  - 假设消息一直向后传，那么 TailContext 会负责释放未处理消息（原始的 ByteBuf）
+- 出站 ByteBuf 处理原则
+  - 出站消息最终都会转为 ByteBuf 输出，一直向前传，由 HeadContext flush 后 release
+- 异常处理原则
+  - 有时候不清楚 ByteBuf 被引用了多少次，但又必须彻底释放，可以循环调用 release 直到返回 true
+
+### 3. **TailContext 释放未处理消息逻辑**
+
+```java
+// io.netty.channel.DefaultChannelPipeline#onUnhandledInboundMessage(java.lang.Object)
+protected void onUnhandledInboundMessage(Object msg) {
+    try {
+        logger.debug(
+            "Discarded inbound message {} that reached at the tail of the pipeline. " +
+            "Please check your pipeline configuration.", msg);
+    } finally {
+        ReferenceCountUtil.release(msg);
+    }
+}
+```
+
+当ByteBuf **被传到了pipeline的head与tail时** ，ByteBuf会被其中的方法彻底释放，但 **前提是ByteBuf被传递到了head与tail中**
+
+具体代码：
+
+```java
+// io.netty.util.ReferenceCountUtil#release(java.lang.Object)
+public static boolean release(Object msg) {
+    if (msg instanceof ReferenceCounted) {
+        return ((ReferenceCounted) msg).release();
+    }
+    return false;
+}
+```
 
 # 九. 零拷贝
 
+## 1. Slice 方法
+
+【零拷贝】的体现之一，对原始 ByteBuf 进行切片成多个 ByteBuf，切片后的 ByteBuf 并没有发生内存复制，还是使用原始 ByteBuf 的内存，切片后的 ByteBuf 维护独立的 read，write 指针，修改子分片，会修改原 ByteBuf 。
+
+<div align="center">  
+    <img src="Netty-字节缓冲区ByteBuf/3.png" width="45%"/>
+  </div>
+
+**示例代码**
+
+```java
+public class SliceTest {
+    public static void main(String[] args) {
+        ByteBuf byteBuf = ByteBufAllocator.DEFAULT.buffer(10);
+        byteBuf.writeBytes(new byte[]{1,2,3,4,5,6,7,8,9,0});
+
+        System.out.println("------byteBuf------");
+        printBuf(byteBuf);
+
+        //分片1
+        ByteBuf slice1 = byteBuf.slice(0,5);
+        System.out.println("------slice1------");
+        printBuf(slice1);
+
+        //分片2
+        ByteBuf slice2 = byteBuf.slice(5, 5);
+        System.out.println("------slice2------");
+        printBuf(slice2);
+
+        //将最后一位0修改成10
+        slice2.setByte(4,10);
+        System.out.println("------修改后slice2------");
+        printBuf(slice2);
+
+        //打印修改后的byteBuf
+        System.out.println("------修改后byteBuf------");
+        printBuf(byteBuf);
+    }
+
+    static void printBuf(ByteBuf byteBuf){
+        StringBuilder stringBuilder = new StringBuilder();
+        for (int i = 0; i< byteBuf.writerIndex();i++) {
+            stringBuilder.append(byteBuf.getByte(i));
+        }
+        System.out.println(stringBuilder);
+    }
+}
+```
+
+**运行结果**
+
+```java
+------byteBuf------
+1234567890
+------slice1------
+12345
+------slice2------
+67890
+------修改后slice2------
+678910
+------修改后byteBuf------
+12345678910
+```
+
+**注意**：
+
+- slice 后的分片，不能再次写入新的数据，这会影响原 ByteBuf 。
+- 对原有的 ByteBuf 进行了release 操作，会影响切片后的 ByteBuf ，推荐使用 retain 方法。 
+
+## 2. duplicate 方法
+
+【零拷贝】的体现之一，就好比截取了原始 ByteBuf 所有内容，并且没有 max capacity 的限制，也是与原始 ByteBuf 使用同一块底层内存，只是读写指针是独立的。
+
+<div align="center">  
+    <img src="Netty-字节缓冲区ByteBuf/4.png" width="40%"/>
+  </div>
 
 
 
+**示例代码**
+
+```java
+public class ByteBufTest {
+    public static void main(String[] args) {
+        ByteBuf byteBuf = ByteBufAllocator.DEFAULT.buffer(10);
+        byteBuf.writeBytes(new byte[]{1,2,3,4,5,6,7,8,9,0});
+
+        //拷贝一块buf
+        ByteBuf duplicate = byteBuf.duplicate();
+        printBuf(duplicate);
+
+        //将最后一位0修改成10
+        duplicate.setByte(9,10);
+        //打印byteBuf
+        printBuf(byteBuf);
+
+        // 写入新数据11
+        duplicate.writeByte(11);
+        //打印byteBuf
+        printBuf(byteBuf);
+    }
+  	static void printBuf(ByteBuf byteBuf){
+    		StringBuilder stringBuilder = new StringBuilder();
+    		for (int i = 0; i< byteBuf.writerIndex();i++) {
+      			stringBuilder.append(byteBuf.getByte(i));
+    		}
+    		System.out.println(stringBuilder);
+    }
+}
+```
+
+**运行结果**
+
+```java
+1234567890
+12345678910
+12345678910
+```
+
+## 3. CompositeByteBuf
+
+【零拷贝】的体现之一，可以将多个 ByteBuf 合并为一个逻辑上的 ByteBuf，避免拷贝。
+
+**示例代码**
+
+```java
+public class ByteBufTest {
+    public static void main(String[] args) {
+        ByteBuf byteBuf1 = ByteBufAllocator.DEFAULT.buffer(5);
+        byteBuf1.writeBytes(new byte[]{1, 2, 3, 4, 5});
+
+        ByteBuf byteBuf2 = ByteBufAllocator.DEFAULT.buffer(5);
+        byteBuf2.writeBytes(new byte[]{6, 7, 8, 9, 0});
+
+        CompositeByteBuf compositeByteBuf = ByteBufAllocator.DEFAULT.compositeBuffer();
+        // 组合两个byteBuf
+        // true 表示增加新的 ByteBuf 自动递增 write index, 否则 write index 会始终为 0
+        compositeByteBuf.addComponents(true, byteBuf1, byteBuf2);
+
+        printBuf(compositeByteBuf);
+    }
+  
+  	static void printBuf(ByteBuf byteBuf){
+    		StringBuilder stringBuilder = new StringBuilder();
+    		for (int i = 0; i< byteBuf.writerIndex();i++) {
+      			stringBuilder.append(byteBuf.getByte(i));
+    		}
+    		System.out.println(stringBuilder);
+    }
+}
+```
+
+**运行结果**
+
+```java
+1234567890
+```
+
+CompositeByteBuf 是一个组合的 ByteBuf ，它内部维护了一个 Component 数组，每个 Component 管理一个 ByteBuf，记录了这个 ByteBuf 相对于整体偏移量等信息，代表着整体中某一段的数据。
+
+- 优点，对外是一个虚拟视图，组合这些 ByteBuf 不会产生内存复制
+- 缺点，复杂了很多，多次操作会带来性能的损耗
+
+## 4. Unpooled
+
+Unpooled 是一个工具类，类如其名，提供了非池化的 ByteBuf 创建、组合、复制等操作
+
+这里仅介绍其跟【零拷贝】相关的 wrappedBuffer 方法，可以用来包装 ByteBuf。
+
+**示例代码**
+
+```java
+public class ByteBufTest {
+    public static void main(String[] args) {
+        ByteBuf byteBuf1 = ByteBufAllocator.DEFAULT.buffer(5);
+        byteBuf1.writeBytes(new byte[]{1, 2, 3, 4, 5});
+
+        ByteBuf byteBuf2 = ByteBufAllocator.DEFAULT.buffer(5);
+        byteBuf2.writeBytes(new byte[]{6, 7, 8, 9, 0});
+
+        //CompositeByteBuf compositeByteBuf = ByteBufAllocator.DEFAULT.compositeBuffer();
+        // 组合两个byteBuf，主要要使用带有increaseWriteIndex的，否则会失败。
+        //compositeByteBuf.addComponents(true,byteBuf1, byteBuf2);
+        // 组合两个byteBuf，底层使用CompositeByteBuf。
+        ByteBuf wrappedBuffer = Unpooled.wrappedBuffer(byteBuf1, byteBuf2);
+
+        printBuf(wrappedBuffer);
+    }
+}
+```
+
+**运行结果**
+
+```java
+1234567890
+```
 
 # 十. 深度拷贝
 
+ByteBuf 提供了 copy 方法，这一类方法是真正的拷贝原 ByteBuf 到新的内存，返回一个新的 ByteBuf ，与原 ByteBuf 没有关系。
+
+提供两个拷贝：
+
+- 一个是全量
+- 一个指定位置和长度
+
+```java
+public abstract ByteBuf copy();
+
+public abstract ByteBuf copy(int index, int length);
+```
+
+**示例代码**
+
+```java
+public class ByteBufTest {
+    public static void main(String[] args) {
+        ByteBuf byteBuf = ByteBufAllocator.DEFAULT.buffer(10);
+        byteBuf.writeBytes(new byte[]{1,2,3,4,5,6,7,8,9,0});
+
+        ByteBuf copy1 = byteBuf.copy();
+        printBuf(copy1);
+
+        ByteBuf copy2 = byteBuf.copy(5, 5);
+        printBuf(copy2);
+    }
+}
+```
+
+**运行结果**
+
+```java
+1234567890
+67890
+```
